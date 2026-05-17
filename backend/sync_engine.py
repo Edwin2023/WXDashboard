@@ -249,11 +249,11 @@ def sync_incremental():
             count = conn2.execute(
                 "SELECT COUNT(*) as cnt FROM messages WHERE group_id=?", (gid,)
             ).fetchone()["cnt"]
-            last_date = conn2.execute(
-                "SELECT msg_date FROM messages WHERE group_id=? ORDER BY msg_time DESC LIMIT 1",
+            last_time = conn2.execute(
+                "SELECT msg_time FROM messages WHERE group_id=? ORDER BY msg_time DESC LIMIT 1",
                 (gid,)
             ).fetchone()
-            update_group_stats(gid, last_active_date=last_date["msg_date"] if last_date else None,
+            update_group_stats(gid, last_active_date=last_time["msg_time"] if last_time else None,
                               total_messages=count, conn=conn2)
             conn2.close()
 
@@ -288,7 +288,7 @@ def sync_full(group_name, limit=2000):
     count = conn.execute("SELECT COUNT(*) as cnt FROM messages WHERE group_id=?", (group_id,)).fetchone()["cnt"]
     last_date = None
     if messages:
-        last_date = messages[-1].get("time", "")[:10]
+        last_date = messages[-1].get("time", "")
     update_group_stats(group_id, last_active_date=last_date, total_messages=count, conn=conn)
     conn.close()
 

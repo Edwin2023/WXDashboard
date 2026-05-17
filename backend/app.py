@@ -1,7 +1,8 @@
 import threading
 import time
+import subprocess
 from flask import Flask, render_template, request, jsonify
-from .config import TEMPLATES_DIR, STATIC_DIR, FLASK_HOST, FLASK_PORT, get_wx_file_url
+from .config import TEMPLATES_DIR, STATIC_DIR, FLASK_HOST, FLASK_PORT, get_wx_file_url, get_wx_file_path
 from .database import (
     init_db, get_all_groups, get_group, get_categories,
     get_messages, get_latest_messages, search_messages,
@@ -135,6 +136,18 @@ def api_check_file():
     if url:
         return jsonify({"exists": True, "url": url})
     return jsonify({"exists": False})
+
+
+@app.route("/api/files/open", methods=["POST"])
+def api_open_file():
+    msg_date = request.args.get("msg_date", "")
+    filename = request.args.get("filename", "")
+    file_path = get_wx_file_path(msg_date, filename)
+    if file_path:
+        import os as _os
+        subprocess.Popen(["explorer", "/select,", _os.path.normpath(file_path)])
+        return jsonify({"ok": True})
+    return jsonify({"ok": False, "error": "文件不存在"})
 
 
 @app.route("/api/groups/<int:group_id>/subcategory", methods=["POST"])

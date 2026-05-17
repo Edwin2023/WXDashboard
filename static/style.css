@@ -174,64 +174,6 @@ body {
 .btn-refresh:hover { background: var(--slate); }
 .btn-refresh:active { opacity: 0.85; }
 
-/* Auto-sync controls */
-.auto-sync-controls {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-}
-
-.btn-auto-sync {
-  display: inline-flex;
-  align-items: center;
-  gap: 5px;
-  font-family: var(--font-ui);
-  font-size: 0.8rem;
-  font-weight: 600;
-  padding: 6px 14px;
-  border: 1px solid var(--ash);
-  border-radius: var(--radius);
-  background: var(--white);
-  color: var(--steel);
-  cursor: pointer;
-  white-space: nowrap;
-  transition: all 0.15s;
-}
-.btn-auto-sync:hover { border-color: var(--accent); color: var(--accent); }
-.btn-auto-sync.active {
-  background: var(--green);
-  border-color: var(--green);
-  color: var(--white);
-}
-.btn-auto-sync.active:hover { background: #3d6a4b; }
-
-.interval-select {
-  font-family: var(--font-mono);
-  font-size: 0.75rem;
-  padding: 5px 6px;
-  border: 1px solid var(--ash);
-  border-radius: var(--radius);
-  background: var(--white);
-  color: var(--slate);
-  cursor: pointer;
-  outline: none;
-  transition: border-color 0.15s;
-}
-.interval-select:focus { border-color: var(--accent); }
-.interval-select:disabled { opacity: 0.5; cursor: not-allowed; }
-
-.auto-sync-indicator {
-  font-family: var(--font-mono);
-  font-size: 0.72rem;
-  color: var(--green);
-  background: var(--green-bg);
-  padding: 3px 8px;
-  border-radius: 10px;
-  min-width: 42px;
-  text-align: center;
-  font-weight: 600;
-}
-
 .btn-modal-close {
   font-family: var(--font-ui);
   font-size: 0.82rem;
@@ -317,12 +259,12 @@ table {
 }
 
 /* Column widths */
-.col-idx { width: 40px; }
+.col-idx { width: 36px; }
 .col-name { width: 14%; }
 .col-cat { width: 9%; }
-.col-date { width: 7%; }
-.col-count { width: 6%; }
-.col-creator { width: 8%; }
+.col-date { width: 8.5%; }
+.col-count { width: 5%; }
+.col-creator { width: 7.5%; }
 .col-msgs { width: 40%; }
 .col-contacts { width: 16%; }
 
@@ -385,7 +327,12 @@ tr:hover .group-name { color: var(--accent); }
 .date-cell {
   font-family: var(--font-mono);
   font-size: 0.8rem;
-  white-space: nowrap;
+  white-space: normal;
+  line-height: 1.25;
+}
+.date-cell .date-time {
+  color: var(--fog);
+  font-size: 0.72rem;
 }
 
 .msg-preview { font-size: 0.78rem; }
@@ -625,6 +572,24 @@ tr:hover .group-name { color: var(--accent); }
   font-size: 0.84rem;
   color: var(--slate);
   line-height: 1.5;
+}
+
+/* === Resize Handle === */
+.resize-handle {
+  position: absolute;
+  right: 0;
+  top: 0;
+  bottom: 0;
+  width: 6px;
+  cursor: col-resize;
+  user-select: none;
+  z-index: 3;
+}
+.resize-handle:hover, .resize-handle.active {
+  background: var(--accent);
+}
+thead th {
+  position: relative;
 }
 
 /* === File Links === */

@@ -218,7 +218,7 @@ def get_latest_messages(group_id, n=3):
     conn = get_db()
     rows = conn.execute("""
         SELECT id, group_id, local_id, sender, content, msg_time, msg_date, msg_type
-        FROM messages WHERE group_id=? AND msg_type IN ('text', '文本')
+        FROM messages WHERE group_id=? AND msg_type != '系统'
         ORDER BY msg_time DESC LIMIT ?
     """, (group_id, n)).fetchall()
     conn.close()

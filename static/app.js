@@ -5,11 +5,6 @@ var drawerGroupId = null;
 var messagesCache = {};
 var contactsCache = {};
 
-var autoSyncTimer = null;
-var autoSyncCountdown = 0;
-var autoSyncEnabled = false;
-var autoSyncInterval = 60;
-
 var INTERNAL_CATS = ['内部沟通', '施工局合作', '设计院合作'];
 var EXTERNAL_CATS = ['供应商咨询', '地基处理', '建筑MEP', '保险'];
 var ORDERED_CATS = INTERNAL_CATS.concat(EXTERNAL_CATS);
@@ -18,8 +13,6 @@ document.addEventListener('DOMContentLoaded', function () {
   loadProjects();
   loadAll();
   document.getElementById('refresh-btn').addEventListener('click', onRefresh);
-  document.getElementById('auto-sync-btn').addEventListener('click', toggleAutoSync);
-  document.getElementById('auto-sync-interval').addEventListener('change', onAutoIntervalChange);
   document.getElementById('search-input').addEventListener('keydown', function (e) {
     if (e.key === 'Enter') onSearch();
   });
@@ -29,6 +22,9 @@ document.addEventListener('DOMContentLoaded', function () {
   document.getElementById('sync-modal-overlay').addEventListener('click', closeSyncModal);
   document.getElementById('search-panel-close').addEventListener('click', closeSearchPanel);
   document.getElementById('project-select').addEventListener('change', onProjectChange);
+
+  setInterval(doAutoSync, 60000);
+  initColumnResize();
 });
 
 function loadProjects() {
@@ -196,7 +192,21 @@ function renderTable(groups) {
 
     var tdDate = document.createElement('td');
     tdDate.className = 'date-cell';
-    tdDate.textContent = formatDate(g.last_active_date);
+    var dateFormatted = formatDate(g.last_active_date);
+    var spaceIdx = dateFormatted.indexOf(' ');
+    if (spaceIdx !== -1) {
+      var dateLine = document.createElement('span');
+      dateLine.textContent = dateFormatted.substring(0, spaceIdx);
+      tdDate.appendChild(dateLine);
+      var br = document.createElement('br');
+      tdDate.appendChild(br);
+      var timeLine = document.createElement('span');
+      timeLine.className = 'date-time';
+      timeLine.textContent = dateFormatted.substring(spaceIdx + 1);
+      tdDate.appendChild(timeLine);
+    } else {
+      tdDate.textContent = dateFormatted;
+    }
     tr.appendChild(tdDate);
 
     tr.appendChild(makeTd(g.message_count || g.total_messages || 0));
@@ -229,6 +239,13 @@ function makeTd(text) {
 
 function formatDate(dateStr) {
   if (!dateStr) return '-';
+  if (dateStr.indexOf(' ') !== -1) {
+    var parts = dateStr.split(' ');
+    var dp = parts[0].split('-');
+    var tp = parts[1].substring(0, 5);
+    if (dp.length >= 3) return dp[0] + '.' + dp[1] + '.' + dp[2] + ' ' + tp;
+    return dateStr;
+  }
   var parts = dateStr.split('-');
   if (parts.length < 3) return dateStr;
   var y = parseInt(parts[0], 10);
@@ -586,99 +603,16 @@ function getActivityClass(dateStr) {
   return 'row-old';
 }
 
-function toggleAutoSync() {
-  if (autoSyncEnabled) {
-    stopAutoSync();
-  } else {
-    startAutoSync();
-  }
-}
-
-function startAutoSync() {
-  autoSyncEnabled = true;
-  autoSyncInterval = parseInt(document.getElementById('auto-sync-interval').value, 10);
-  autoSyncCountdown = autoSyncInterval;
-
-  var btn = document.getElementById('auto-sync-btn');
-  btn.classList.add('active');
-  document.getElementById('auto-sync-label').textContent = '停止刷新';
-  document.getElementById('auto-sync-interval').disabled = true;
-
-  var indicator = document.getElementById('auto-sync-indicator');
-  indicator.style.display = '';
-  indicator.textContent = autoSyncCountdown + 's';
-
-  updateAutoSyncIndicator();
-  autoSyncTimer = setInterval(autoSyncTick, 1000);
-}
-
-function stopAutoSync() {
-  autoSyncEnabled = false;
-
-  var btn = document.getElementById('auto-sync-btn');
-  btn.classList.remove('active');
-  document.getElementById('auto-sync-label').textContent = '自动刷新';
-  document.getElementById('auto-sync-interval').disabled = false;
-
-  var indicator = document.getElementById('auto-sync-indicator');
-  indicator.style.display = 'none';
-
-  if (autoSyncTimer) {
-    clearInterval(autoSyncTimer);
-    autoSyncTimer = null;
-  }
-}
-
-function onAutoIntervalChange() {
-  autoSyncInterval = parseInt(document.getElementById('auto-sync-interval').value, 10);
-  if (autoSyncEnabled) {
-    autoSyncCountdown = autoSyncInterval;
-    updateAutoSyncIndicator();
-  }
-}
-
-function autoSyncTick() {
-  if (!autoSyncEnabled) return;
-
-  autoSyncCountdown--;
-  updateAutoSyncIndicator();
-
-  if (autoSyncCountdown <= 0) {
-    autoSyncCountdown = autoSyncInterval;
-    updateAutoSyncIndicator();
-    doAutoSync();
-  }
-}
-
-function updateAutoSyncIndicator() {
-  var indicator = document.getElementById('auto-sync-indicator');
-  if (!autoSyncEnabled) return;
-  var mins = Math.floor(autoSyncCountdown / 60);
-  var secs = autoSyncCountdown % 60;
-  indicator.textContent = mins > 0 ? mins + 'm' + secs + 's' : secs + 's';
-}
-
 function doAutoSync() {
-  var indicator = document.getElementById('auto-sync-indicator');
-  indicator.textContent = '同步中...';
-
   fetch('/api/sync/refresh', { method: 'POST' })
     .then(function (r) { return r.json(); })
     .then(function (data) {
-      if (data.error) {
-        indicator.textContent = '失败';
-        return;
-      }
+      if (data.error) return;
       if (data.messages_new > 0) {
-        indicator.textContent = '+' + data.messages_new;
         refreshCurrentView();
       }
-      updateAutoSyncIndicator();
     })
-    .catch(function () {
-      indicator.textContent = '失败';
-      updateAutoSyncIndicator();
-    });
+    .catch(function () {});
 }
 
 function refreshCurrentView() {
@@ -719,16 +653,84 @@ function parseFileInfo(msg) {
 }
 
 function onFileClick(filename, msgDate) {
-  fetch('/api/files/check?msg_date=' + encodeURIComponent(msgDate) + '&filename=' + encodeURIComponent(filename))
+  fetch('/api/files/open?msg_date=' + encodeURIComponent(msgDate) + '&filename=' + encodeURIComponent(filename), { method: 'POST' })
     .then(function (r) { return r.json(); })
     .then(function (data) {
-      if (data.exists && data.url) {
-        window.open(data.url, '_blank');
-      } else {
+      if (!data.ok && data.error) {
         alert('文件不存在: ' + filename);
       }
     })
     .catch(function () {
-      alert('检查文件失败: ' + filename);
+      alert('打开文件失败: ' + filename);
     });
+}
+
+function initColumnResize() {
+  var table = document.getElementById('groups-table');
+  if (!table) return;
+
+  var cols = table.querySelector('colgroup');
+  if (!cols) return;
+
+  var ths = table.querySelectorAll('thead th');
+  var colElems = cols.querySelectorAll('col');
+  var savedWidths = {};
+  try {
+    savedWidths = JSON.parse(localStorage.getItem('tableColWidths') || '{}');
+  } catch (e) {}
+
+  // Restore saved widths
+  Object.keys(savedWidths).forEach(function (idx) {
+    if (colElems[idx]) {
+      colElems[idx].style.width = savedWidths[idx];
+    }
+  });
+
+  var handle = null;
+  var startX = 0;
+  var startW = 0;
+  var activeCol = null;
+  var activeHandle = null;
+
+  ths.forEach(function (th, idx) {
+    if (idx === ths.length - 1) return; // Skip last column
+    var h = document.createElement('div');
+    h.className = 'resize-handle';
+    h.addEventListener('mousedown', function (e) {
+      e.preventDefault();
+      e.stopPropagation();
+      handle = h;
+      startX = e.clientX;
+      activeCol = colElems[idx];
+      activeHandle = h;
+      activeHandle.classList.add('active');
+      startW = activeCol.getBoundingClientRect().width;
+    });
+    th.appendChild(h);
+  });
+
+  document.addEventListener('mousemove', function (e) {
+    if (!handle) return;
+    var diff = e.clientX - startX;
+    var newW = Math.max(24, startW + diff);
+    activeCol.style.width = newW + 'px';
+
+    // Save widths
+    var widths = {};
+    colElems.forEach(function (col, i) {
+      widths[i] = col.style.width || col.getBoundingClientRect().width + 'px';
+    });
+    try {
+      localStorage.setItem('tableColWidths', JSON.stringify(widths));
+    } catch (e) {}
+  });
+
+  document.addEventListener('mouseup', function () {
+    if (activeHandle) activeHandle.classList.remove('active');
+    handle = null;
+    startX = 0;
+    startW = 0;
+    activeCol = null;
+    activeHandle = null;
+  });
 }

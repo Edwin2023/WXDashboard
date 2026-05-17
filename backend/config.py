@@ -63,4 +63,14 @@ def get_wx_file_url(msg_date, filename):
     return None
 
 
+def get_wx_file_path(msg_date, filename):
+    if not _WX_FILE_ROOT or not msg_date or not filename:
+        return None
+    yyyy_mm = msg_date[:7]
+    file_path = os.path.normpath(os.path.join(_WX_FILE_ROOT, yyyy_mm, filename))
+    if os.path.isfile(file_path):
+        return file_path
+    return None
+
+
 _detect_wx_data_dir()
