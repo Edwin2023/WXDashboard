@@ -36,6 +36,10 @@ def init_db():
     except sqlite3.OperationalError:
         pass
     try:
+        conn.execute("ALTER TABLE groups ADD COLUMN manual_category INTEGER DEFAULT 0")
+    except sqlite3.OperationalError:
+        pass
+    try:
         conn.execute("ALTER TABLE groups ADD COLUMN project TEXT DEFAULT 'Laldia'")
     except sqlite3.OperationalError:
         pass
@@ -142,13 +146,20 @@ def get_group_by_name(name):
 def upsert_group(name, category, sub_category=None, partner_full_name=None, main_purpose=None,
                  notes=None, group_creator=None, project=None):
     conn = get_db()
-    existing = conn.execute("SELECT id FROM groups WHERE name=?", (name,)).fetchone()
+    existing = conn.execute("SELECT id, manual_category FROM groups WHERE name=?", (name,)).fetchone()
     if existing:
-        conn.execute("""
-            UPDATE groups SET category=?, sub_category=?, partner_full_name=?, main_purpose=?,
-            notes=?, group_creator=?
-            WHERE id=?
-        """, (category, sub_category, partner_full_name, main_purpose, notes, group_creator, existing["id"]))
+        if existing["manual_category"]:
+            conn.execute("""
+                UPDATE groups SET sub_category=?, partner_full_name=?, main_purpose=?,
+                notes=?, group_creator=?
+                WHERE id=?
+            """, (sub_category, partner_full_name, main_purpose, notes, group_creator, existing["id"]))
+        else:
+            conn.execute("""
+                UPDATE groups SET category=?, sub_category=?, partner_full_name=?, main_purpose=?,
+                notes=?, group_creator=?, project=?
+                WHERE id=?
+            """, (category, sub_category, partner_full_name, main_purpose, notes, group_creator, project, existing["id"]))
         gid = existing["id"]
     else:
         cur = conn.execute("""
@@ -184,6 +195,26 @@ def update_group_stats(group_id, last_active_date=None, total_messages=None, con
     conn.commit()
     if close_conn:
         conn.close()
+
+
+def update_group_category(group_id, category):
+    conn = get_db()
+    conn.execute(
+        "UPDATE groups SET category=?, manual_category=1 WHERE id=?",
+        (category, group_id)
+    )
+    conn.commit()
+    conn.close()
+
+
+def update_group_settings(group_id, project=None, category=None, sub_category=None):
+    conn = get_db()
+    conn.execute(
+        "UPDATE groups SET project=?, category=?, sub_category=?, manual_category=1 WHERE id=?",
+        (project, category, sub_category, group_id)
+    )
+    conn.commit()
+    conn.close()
 
 
 def get_categories(project=None):
@@ -327,3 +358,32 @@ def set_subcategory(group_id, sub_category):
     conn.execute("UPDATE groups SET sub_category=? WHERE id=?", (sub_category, group_id))
     conn.commit()
     conn.close()
+
+
+def unlock_group_category(group_id):
+    conn = get_db()
+    conn.execute("UPDATE groups SET manual_category=0 WHERE id=?", (group_id,))
+    conn.commit()
+    conn.close()
+    conn.commit()
+    conn.close()
+
+
+def get_summaries(group_id):
+    conn = get_db()
+    rows = conn.execute(
+        "SELECT * FROM ai_summaries WHERE group_id=? ORDER BY generated_at DESC",
+        (group_id,)
+    ).fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
+
+
+def get_extractions(group_id):
+    conn = get_db()
+    rows = conn.execute(
+        "SELECT * FROM ai_extractions WHERE group_id=? ORDER BY extract_type, id",
+        (group_id,)
+    ).fetchall()
+    conn.close()
+    return [dict(r) for r in rows]

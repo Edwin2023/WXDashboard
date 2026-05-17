@@ -61,7 +61,7 @@
           <th>最后活跃</th>
           <th>消息数</th>
           <th>群主</th>
-          <th>最近 3 条消息</th>
+          <th>最近消息</th>
           <th>联系信息</th>
         </tr>
       </thead>
@@ -73,8 +73,16 @@
 <div class="drawer-overlay" id="drawer-overlay"></div>
 <aside class="drawer" id="drawer">
   <div class="drawer-header">
-    <h2 id="drawer-title"></h2>
-    <button class="drawer-close" id="drawer-close">&times;</button>
+    <div class="drawer-header-top">
+      <h2 id="drawer-title"></h2>
+      <button class="drawer-close" id="drawer-close">&times;</button>
+    </div>
+    <div class="drawer-tabs" id="drawer-tabs">
+      <button class="drawer-tab active" data-tab="messages">消息</button>
+      <button class="drawer-tab" data-tab="summary">群摘要</button>
+      <button class="drawer-tab" data-tab="extractions">关键信息</button>
+      <button class="drawer-tab" data-tab="settings">设置</button>
+    </div>
   </div>
   <div class="drawer-body" id="drawer-body"></div>
 </aside>

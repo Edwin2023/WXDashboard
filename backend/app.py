@@ -10,7 +10,8 @@ from .database import (
     init_db, get_all_groups, get_group, get_categories,
     get_messages, get_latest_messages, search_messages,
     get_sync_status, get_message_count, get_contacts, get_projects,
-    set_subcategory
+    set_subcategory, update_group_category, update_group_settings,
+    get_summaries, get_extractions
 )
 from .sync_engine import sync_incremental, sync_all_groups_full, sync_full, get_sync_stats, discover_new_groups
 
@@ -131,6 +132,18 @@ def api_group_contacts(group_id):
     return jsonify(contacts)
 
 
+@app.route("/api/groups/<int:group_id>/summaries")
+def api_group_summaries(group_id):
+    summaries = get_summaries(group_id)
+    return jsonify(summaries)
+
+
+@app.route("/api/groups/<int:group_id>/extractions")
+def api_group_extractions(group_id):
+    extractions = get_extractions(group_id)
+    return jsonify(extractions)
+
+
 @app.route("/api/files/check")
 def api_check_file():
     msg_date = request.args.get("msg_date", "")
@@ -159,6 +172,42 @@ def api_set_subcategory(group_id):
     sub = data.get("sub_category", "")
     set_subcategory(group_id, sub)
     return jsonify({"ok": True})
+
+
+@app.route("/api/groups/<int:group_id>/settings", methods=["GET", "POST"])
+def api_group_settings(group_id):
+    if request.method == "GET":
+        group = get_group(group_id)
+        if not group:
+            return jsonify({"error": "群组不存在"}), 404
+        return jsonify({
+            "project": group.get("project", ""),
+            "category": group.get("category", ""),
+            "sub_category": group.get("sub_category", ""),
+            "manual_category": bool(group.get("manual_category", 0)),
+            "projects": get_projects(),
+            "categories": get_categories()
+        })
+    data = request.get_json(force=True)
+    if data.get("unlock"):
+        from .database import unlock_group_category
+        unlock_group_category(group_id)
+        return jsonify({"ok": True})
+    project = data.get("project", "")
+    category = data.get("category", "")
+    sub_category = data.get("sub_category", "")
+    update_group_settings(group_id, project=project, category=category, sub_category=sub_category)
+    return jsonify({"ok": True})
+
+
+@app.route("/api/groups/<int:group_id>/category", methods=["POST"])
+def api_set_category(group_id):
+    data = request.get_json(force=True)
+    cat = data.get("category", "")
+    if not cat:
+        return jsonify({"error": "分类不能为空"}), 400
+    update_group_category(group_id, cat)
+    return jsonify({"ok": True, "category": cat})
 
 
 @app.route("/api/sync/discover", methods=["POST"])
@@ -228,7 +277,7 @@ def api_export_excel():
     name_font = Font(name="微软雅黑", size=9, bold=True, color="1A1F25")
     time_font = Font(name="Consolas", size=9, color="6B7B8D")
 
-    headers = ["#", "群名", "分类", "子分类", "最后活跃", "消息数", "群主", "最近3条消息", "联系信息"]
+    headers = ["#", "群名", "分类", "子分类", "最后活跃", "消息数", "群主", "最近消息", "联系信息"]
     col_widths = [4, 28, 12, 12, 18, 8, 14, 55, 28]
 
     for ci, h in enumerate(headers, 1):
@@ -285,7 +334,8 @@ def api_export_excel():
 
     import datetime
     today = datetime.date.today().strftime("%Y%m%d")
-    filename = f"微信群台账_{project}_{today}.xlsx"
+    cat_part = category if category else "全部"
+    filename = f"WXGLedger_{project}_{cat_part}_{today}.xlsx"
 
     return send_file(
         output,

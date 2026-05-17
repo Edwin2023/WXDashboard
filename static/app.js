@@ -24,6 +24,12 @@ document.addEventListener('DOMContentLoaded', function () {
   document.getElementById('search-panel-close').addEventListener('click', closeSearchPanel);
   document.getElementById('project-select').addEventListener('change', onProjectChange);
 
+  document.getElementById('drawer-tabs').addEventListener('click', function(e) {
+    var tab = e.target.closest('.drawer-tab');
+    if (!tab) return;
+    switchDrawerTab(tab.dataset.tab);
+  });
+
   setInterval(doAutoSync, 60000);
   initColumnResize();
 });
@@ -114,6 +120,37 @@ function renderTabs(categories) {
     tab.textContent = cat;
     tab.dataset.cat = cat;
     tab.addEventListener('click', function () { setActiveTab(tab, cat); });
+    tab.addEventListener('dragover', function (e) {
+      e.preventDefault();
+      e.dataTransfer.dropEffect = 'move';
+      tab.classList.add('drag-over');
+    });
+    tab.addEventListener('dragleave', function () {
+      tab.classList.remove('drag-over');
+    });
+    tab.addEventListener('drop', function (e) {
+      e.preventDefault();
+      tab.classList.remove('drag-over');
+      var groupId = parseInt(e.dataTransfer.getData('text/plain'), 10);
+      var newCat = tab.dataset.cat;
+      if (!groupId) return;
+      fetch('/api/groups/' + groupId + '/category', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ category: newCat })
+      })
+      .then(function (r) { return r.json(); })
+      .then(function (data) {
+        if (data.ok) {
+          var group = groupsData.find(function (g) { return g.id === groupId; });
+          if (group) group.category = newCat;
+          filterTable();
+          tab.style.transform = 'scale(1.1)';
+          setTimeout(function () { tab.style.transform = ''; }, 200);
+        }
+      })
+      .catch(function (e) { console.error(e); });
+    });
     container.appendChild(tab);
   });
 }
@@ -163,9 +200,19 @@ function renderTable(groups) {
   groups.forEach(function (g, idx) {
     var tr = document.createElement('tr');
     tr.className = getActivityClass(g.last_active_date);
+    tr.draggable = true;
     tr.addEventListener('click', function (e) {
       if (e.target.closest('.group-name')) return;
       openDrawer(g.id, g.name);
+    });
+    tr.addEventListener('dragstart', function (e) {
+      e.dataTransfer.setData('text/plain', g.id);
+      e.dataTransfer.effectAllowed = 'move';
+      tr.classList.add('dragging');
+    });
+    tr.addEventListener('dragend', function () {
+      tr.classList.remove('dragging');
+      document.querySelectorAll('.tab.drag-over').forEach(function (t) { t.classList.remove('drag-over'); });
     });
 
     tr.appendChild(makeTd(idx + 1));
@@ -359,7 +406,307 @@ function openDrawer(groupId, groupName) {
   overlay.classList.add('show');
   document.body.style.overflow = 'hidden';
 
+  var tabs = document.querySelectorAll('#drawer-tabs .drawer-tab');
+  tabs.forEach(function(t) { t.classList.remove('active'); });
+  var msgTab = document.querySelector('#drawer-tabs .drawer-tab[data-tab="messages"]');
+  if (msgTab) msgTab.classList.add('active');
+
   loadDrawerMessages(groupId, 0);
+}
+
+function switchDrawerTab(tabName) {
+  var tabs = document.querySelectorAll('#drawer-tabs .drawer-tab');
+  tabs.forEach(function(t) { t.classList.remove('active'); });
+  var activeTab = document.querySelector('#drawer-tabs .drawer-tab[data-tab="' + tabName + '"]');
+  if (activeTab) activeTab.classList.add('active');
+
+  var body = document.getElementById('drawer-body');
+  body.innerHTML = '<div class="empty-state">加载中...</div>';
+
+  if (tabName === 'messages') {
+    loadDrawerMessages(drawerGroupId, 0);
+  } else if (tabName === 'summary') {
+    loadDrawerSummaries(drawerGroupId);
+  } else if (tabName === 'extractions') {
+    loadDrawerExtractions(drawerGroupId);
+  } else if (tabName === 'settings') {
+    loadDrawerSettings(drawerGroupId);
+  }
+}
+
+function loadDrawerSummaries(groupId) {
+  fetch('/api/groups/' + groupId + '/summaries')
+    .then(function(r) { return r.json(); })
+    .then(function(summaries) {
+      var body = document.getElementById('drawer-body');
+      body.innerHTML = '';
+
+      if (!summaries || summaries.length === 0) {
+        body.innerHTML = '<div class="empty-state">暂无AI摘要</div>';
+        return;
+      }
+
+      summaries.forEach(function(s) {
+        var card = document.createElement('div');
+        card.className = 'summary-card';
+
+        if (s.date_range) {
+          var range = document.createElement('div');
+          range.className = 'summary-range';
+          range.textContent = s.date_range;
+          card.appendChild(range);
+        }
+
+        var text = document.createElement('div');
+        text.className = 'summary-text';
+        text.textContent = s.summary_text;
+        card.appendChild(text);
+
+        if (s.key_topics) {
+          try {
+            var topics = JSON.parse(s.key_topics);
+            if (Array.isArray(topics) && topics.length > 0) {
+              var tags = document.createElement('div');
+              tags.className = 'summary-tags';
+              topics.forEach(function(t) {
+                var tag = document.createElement('span');
+                tag.className = 'summary-tag';
+                tag.textContent = t;
+                tags.appendChild(tag);
+              });
+              card.appendChild(tags);
+            }
+          } catch(e) {}
+        }
+
+        body.appendChild(card);
+      });
+    })
+    .catch(function(e) {
+      document.getElementById('drawer-body').innerHTML = '<div class="empty-state">加载失败</div>';
+      console.error(e);
+    });
+}
+
+function loadDrawerExtractions(groupId) {
+  fetch('/api/groups/' + groupId + '/extractions')
+    .then(function(r) { return r.json(); })
+    .then(function(extractions) {
+      var body = document.getElementById('drawer-body');
+      body.innerHTML = '';
+
+      if (!extractions || extractions.length === 0) {
+        body.innerHTML = '<div class="empty-state">暂无关键信息提取</div>';
+        return;
+      }
+
+      var grouped = {};
+      extractions.forEach(function(e) {
+        if (!grouped[e.extract_type]) grouped[e.extract_type] = [];
+        grouped[e.extract_type].push(e);
+      });
+
+      var typeOrder = ['联系人', '工期节点', '技术参数', '文件引用'];
+      var typeLabels = { '联系人': '联系人', '工期节点': '工期节点', '技术参数': '技术参数', '文件引用': '文件引用' };
+
+      typeOrder.forEach(function(extType) {
+        var items = grouped[extType];
+        if (!items || items.length === 0) return;
+
+        var section = document.createElement('div');
+        section.className = 'extraction-section';
+
+        var heading = document.createElement('div');
+        heading.className = 'extraction-heading';
+        heading.textContent = (typeLabels[extType] || extType) + ' (' + items.length + ')';
+        section.appendChild(heading);
+
+        items.forEach(function(item) {
+          var row = document.createElement('div');
+          row.className = 'extraction-row';
+          try {
+            var content = JSON.parse(item.content);
+            if (extType === '联系人') {
+              row.textContent = [content['姓名'], content['角色'], content['邮箱']].filter(Boolean).join(' / ');
+            } else if (extType === '工期节点') {
+              row.textContent = [content['节点'], content['日期']].filter(Boolean).join(': ');
+            } else if (extType === '技术参数') {
+              row.textContent = [content['参数'], content['值']].filter(Boolean).join(': ');
+            } else if (extType === '文件引用') {
+              row.textContent = [content['文件'], content['日期']].filter(Boolean).join(' - ');
+            } else {
+              row.textContent = JSON.stringify(content);
+            }
+          } catch(e) {
+            row.textContent = item.content;
+          }
+          section.appendChild(row);
+        });
+
+        body.appendChild(section);
+      });
+
+      Object.keys(grouped).forEach(function(extType) {
+        if (typeOrder.indexOf(extType) !== -1) return;
+        var items = grouped[extType];
+        var section = document.createElement('div');
+        section.className = 'extraction-section';
+        var heading = document.createElement('div');
+        heading.className = 'extraction-heading';
+        heading.textContent = extType + ' (' + items.length + ')';
+        section.appendChild(heading);
+        items.forEach(function(item) {
+          var row = document.createElement('div');
+          row.className = 'extraction-row';
+          try {
+            var content = JSON.parse(item.content);
+            row.textContent = JSON.stringify(content);
+          } catch(e) {
+            row.textContent = item.content;
+          }
+          section.appendChild(row);
+        });
+        body.appendChild(section);
+      });
+    })
+    .catch(function(e) {
+      document.getElementById('drawer-body').innerHTML = '<div class="empty-state">加载失败</div>';
+      console.error(e);
+    });
+}
+
+function loadDrawerSettings(groupId) {
+  fetch('/api/groups/' + groupId + '/settings')
+    .then(function(r) { return r.json(); })
+    .then(function(data) {
+      var body = document.getElementById('drawer-body');
+      body.innerHTML = '';
+
+      var form = document.createElement('div');
+      form.className = 'settings-form';
+
+      var manualNote = document.createElement('div');
+      manualNote.className = 'settings-note';
+      if (data.manual_category) {
+        manualNote.textContent = '此群的分类/项目已手动锁定，AI 自动分类将跳过此群。';
+        manualNote.style.color = 'var(--green)';
+      } else {
+        manualNote.textContent = '修改后分类和项目将被锁定，AI 自动分类将跳过此群（摘要和提取不受影响）。';
+      }
+      form.appendChild(manualNote);
+
+      function addRow(label, el) {
+        var row = document.createElement('div');
+        row.className = 'settings-row';
+        var lbl = document.createElement('label');
+        lbl.className = 'settings-label';
+        lbl.textContent = label;
+        row.appendChild(lbl);
+        row.appendChild(el);
+        form.appendChild(row);
+      }
+
+      var projectSelect = document.createElement('select');
+      projectSelect.className = 'settings-input';
+      data.projects.forEach(function(p) {
+        var opt = document.createElement('option');
+        opt.value = p;
+        opt.textContent = p;
+        if (p === data.project) opt.selected = true;
+        projectSelect.appendChild(opt);
+      });
+      addRow('项目', projectSelect);
+
+      var catSelect = document.createElement('select');
+      catSelect.className = 'settings-input';
+      data.categories.forEach(function(c) {
+        var opt = document.createElement('option');
+        opt.value = c;
+        opt.textContent = c;
+        if (c === data.category) opt.selected = true;
+        catSelect.appendChild(opt);
+      });
+      addRow('分类', catSelect);
+
+      var subInput = document.createElement('input');
+      subInput.type = 'text';
+      subInput.className = 'settings-input';
+      subInput.value = data.sub_category || '';
+      subInput.placeholder = '例如: 钢结构、消防...';
+      addRow('子分类', subInput);
+
+      var btnRow = document.createElement('div');
+      btnRow.className = 'settings-btn-row';
+
+      var saveBtn = document.createElement('button');
+      saveBtn.className = 'settings-save-btn';
+      saveBtn.textContent = '保存设置';
+      saveBtn.addEventListener('click', function() {
+        saveBtn.textContent = '保存中...';
+        saveBtn.disabled = true;
+        fetch('/api/groups/' + groupId + '/settings', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            project: projectSelect.value,
+            category: catSelect.value,
+            sub_category: subInput.value.trim()
+          })
+        })
+        .then(function(r) { return r.json(); })
+        .then(function(res) {
+          if (res.ok) {
+            saveBtn.textContent = '已保存';
+            saveBtn.style.background = 'var(--green)';
+            setTimeout(function() { closeDrawer(); loadAll(); }, 600);
+          } else {
+            saveBtn.textContent = '保存失败, 重试';
+            saveBtn.disabled = false;
+          }
+        })
+        .catch(function() {
+          saveBtn.textContent = '保存失败, 重试';
+          saveBtn.disabled = false;
+        });
+      });
+      btnRow.appendChild(saveBtn);
+
+      var unlockBtn = document.createElement('button');
+      unlockBtn.className = 'settings-unlock-btn';
+      unlockBtn.textContent = '解除锁定';
+      unlockBtn.title = '恢复AI自动分类';
+      unlockBtn.addEventListener('click', function() {
+        if (!confirm('确认解除锁定? AI将恢复对此群的自动分类和项目归属。')) return;
+        unlockBtn.textContent = '处理中...';
+        unlockBtn.disabled = true;
+        fetch('/api/groups/' + groupId + '/settings', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            project: projectSelect.value,
+            category: catSelect.value,
+            sub_category: subInput.value.trim(),
+            unlock: true
+          })
+        })
+        .then(function(r) { return r.json(); })
+        .then(function(res) {
+          if (res.ok) {
+            unlockBtn.textContent = '已解锁';
+            setTimeout(function() { closeDrawer(); loadAll(); }, 600);
+          }
+        })
+        .catch(function() {});
+      });
+      btnRow.appendChild(unlockBtn);
+      form.appendChild(btnRow);
+
+      body.appendChild(form);
+    })
+    .catch(function(e) {
+      document.getElementById('drawer-body').innerHTML = '<div class="empty-state">加载失败</div>';
+      console.error(e);
+    });
 }
 
 function loadDrawerMessages(groupId, offset) {
@@ -449,12 +796,27 @@ function onExport() {
   if (currentCategory && currentCategory !== '全部') {
     qs += '&category=' + encodeURIComponent(currentCategory);
   }
-  var a = document.createElement('a');
-  a.href = '/api/export/excel?' + qs;
-  a.download = '';
-  document.body.appendChild(a);
-  a.click();
-  document.body.removeChild(a);
+  fetch('/api/export/excel?' + qs)
+    .then(function(resp) {
+      if (!resp.ok) throw new Error('导出失败 (' + resp.status + ')');
+      return resp.blob();
+    })
+    .then(function(blob) {
+      var today = new Date().toISOString().slice(0,10).replace(/-/g,'');
+      var cat = (currentCategory && currentCategory !== '全部') ? currentCategory : '全部';
+      var filename = 'WXGLedger_' + currentProject + '_' + cat + '_' + today + '.xlsx';
+      var url = URL.createObjectURL(blob);
+      var a = document.createElement('a');
+      a.href = url;
+      a.download = filename;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+    })
+    .catch(function(err) {
+      alert('导出失败: ' + err.message);
+    });
 }
 
 function onRefresh() {
