@@ -22,7 +22,11 @@ document.addEventListener('DOMContentLoaded', function () {
   document.getElementById('drawer-close').addEventListener('click', closeDrawer);
   document.getElementById('drawer-overlay').addEventListener('click', closeDrawer);
   document.getElementById('search-panel-close').addEventListener('click', closeSearchPanel);
-  document.getElementById('project-select').addEventListener('change', onProjectChange);
+  document.getElementById('sidebar-projects').addEventListener('click', function (e) {
+    var item = e.target.closest('.sidebar-project');
+    if (!item) return;
+    onProjectChange(item.dataset.project);
+  });
   document.getElementById('bcc-mail-btn').addEventListener('click', handleBccMail);
 
   document.getElementById('category-filter').addEventListener('change', function () {
@@ -41,7 +45,8 @@ document.addEventListener('DOMContentLoaded', function () {
     switchDrawerTab(tab.dataset.tab);
   });
 
-  // 自动同步已禁用 — 仅用户手动刷新或AI主动调用时更新
+  // 启动后自动同步一次，后续由用户手动刷新
+  setTimeout(function () { onRefresh(); }, 500);
   initColumnResize();
 });
 
@@ -49,21 +54,32 @@ function loadProjects() {
   fetch('/api/projects')
     .then(function (r) { return r.json(); })
     .then(function (projects) {
-      var sel = document.getElementById('project-select');
-      sel.innerHTML = '';
+      var container = document.getElementById('sidebar-projects');
+      container.innerHTML = '';
       projects.forEach(function (p) {
-        var opt = document.createElement('option');
-        opt.value = p;
-        opt.textContent = p;
-        sel.appendChild(opt);
+        var item = document.createElement('button');
+        item.className = 'sidebar-project';
+        if (p === currentProject) item.classList.add('active');
+        item.dataset.project = p;
+
+        var dot = document.createElement('span');
+        dot.className = 'sidebar-project-dot';
+        item.appendChild(dot);
+
+        item.appendChild(document.createTextNode(p));
+        container.appendChild(item);
       });
-      sel.value = currentProject;
     })
     .catch(function (e) { console.error(e); });
 }
 
-function onProjectChange() {
-  currentProject = document.getElementById('project-select').value;
+function onProjectChange(projectName) {
+  if (!projectName || projectName === currentProject) return;
+  currentProject = projectName;
+  var items = document.querySelectorAll('.sidebar-project');
+  items.forEach(function (el) {
+    el.classList.toggle('active', el.dataset.project === projectName);
+  });
   loadAll();
 }
 
@@ -1000,10 +1016,13 @@ function showSyncPanel() {
   panel.classList.add('show');
   var doneEl = panel.querySelector('.sync-done');
   if (doneEl) doneEl.remove();
+  var warnEl = panel.querySelector('.sync-daemon-warn');
+  if (warnEl) warnEl.remove();
   document.getElementById('sync-phase-text').textContent = '准备同步...';
   document.getElementById('sync-counter').textContent = '';
   document.getElementById('sync-progress-fill').style.width = '0%';
   document.getElementById('sync-current').textContent = '';
+  document.getElementById('sync-elapsed').textContent = '';
   clearSyncLog();
   hideSyncErrors();
 }
@@ -1044,10 +1063,32 @@ function updateSyncPanel(data) {
     'syncing_new': '正在同步新群...',
     'analyzing': '正在分析群组活跃状态...',
     'syncing': '正在同步消息...',
+    'writing': '正在写入数据库...',
     'files': '正在检查文件...',
     'done': '同步完成'
   };
   document.getElementById('sync-phase-text').textContent = phaseMap[data.phase] || data.phase;
+
+  // Show elapsed time
+  if (data.elapsed > 0 && data.phase !== 'done') {
+    document.getElementById('sync-elapsed').textContent = '已耗时 ' + Math.round(data.elapsed) + ' 秒';
+  } else if (data.phase === 'done') {
+    document.getElementById('sync-elapsed').textContent = '耗时 ' + Math.round(data.elapsed) + ' 秒';
+  }
+
+  // Daemon startup warning
+  var panel = document.getElementById('sync-panel');
+  var warnEl = panel.querySelector('.sync-daemon-warn');
+  if (data.phase === 'starting') {
+    if (!warnEl) {
+      warnEl = document.createElement('div');
+      warnEl.className = 'sync-daemon-warn';
+      warnEl.textContent = '正在启动微信数据连接（提取密钥+解密数据库），约需 15-20 秒，请勿重复点击刷新！';
+      panel.insertBefore(warnEl, document.getElementById('sync-log'));
+    }
+  } else {
+    if (warnEl) warnEl.remove();
+  }
 
   if (data.total_groups > 0 && (data.phase === 'syncing' || data.phase === 'syncing_new')) {
     document.getElementById('sync-counter').textContent = data.group_index + '/' + data.total_groups;
@@ -1055,6 +1096,11 @@ function updateSyncPanel(data) {
     document.getElementById('sync-progress-fill').style.width = pct + '%';
   } else if (data.phase === 'done') {
     document.getElementById('sync-progress-fill').style.width = '100%';
+    document.getElementById('sync-counter').textContent = '';
+  } else if (data.phase === 'starting') {
+    // Simulate progress based on elapsed time (daemon takes ~18s)
+    var pct = Math.min(Math.round((data.elapsed / 20) * 30), 30);
+    document.getElementById('sync-progress-fill').style.width = pct + '%';
     document.getElementById('sync-counter').textContent = '';
   } else {
     document.getElementById('sync-progress-fill').style.width = '10%';

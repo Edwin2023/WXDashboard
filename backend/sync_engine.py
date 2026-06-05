@@ -8,7 +8,7 @@ from .database import (
     get_db, upsert_message, upsert_group, update_group_stats, add_sync_log,
     get_all_group_names, get_message_count
 )
-from .safe_wx import ensure_daemon, safe_export_sessions, safe_get_members, safe_new_messages, safe_history, stop_daemon
+from .safe_wx import ensure_daemon, safe_export_sessions, safe_get_members, safe_new_messages, safe_history, stop_daemon, start_daemon, is_wechat_running
 
 
 class SyncProgress:
@@ -92,6 +92,7 @@ _safe_mode_available = None
 PROJECT_RULES = [
     (["laldia", "laidia", "港湾"], "Laldia"),
     (["泰国"], "泰国光伏"),
+    (["rama4", "rama 4"], "Rama4"),
 ]
 
 CATEGORY_RULES = [
@@ -208,11 +209,11 @@ def _discover_new_groups(progress=None):
 
         category = _infer_category(name)
         sub_category = _infer_subcategory(name, category)
-        owner = _fetch_group_owner(name)
-        upsert_group(name, category, sub_category=sub_category, project=proj, group_creator=owner)
+        upsert_group(name, category, sub_category=sub_category, project=proj)
         group_names.add(name)
         new_groups.append((name, category, sub_category, proj))
-        _human_delay(f"发现新群: {name}", progress=progress)
+        if progress:
+            progress.add_log(f"发现新群: {name}")
 
     return new_groups
 
@@ -247,15 +248,32 @@ def sync(progress=None):
 
     if progress:
         progress.start()
+        progress.set_phase("starting")
 
-    daemon_ok, daemon_msg = init_daemon()
-    if not daemon_ok:
-        result = {"status": "daemon_unavailable", "message": daemon_msg,
-                "groups_updated": 0, "messages_new": 0, "errors": [],
-                "new_groups_discovered": [], "files_downloaded": 0}
+    global _safe_mode_available
+    if not _safe_mode_available:
         if progress:
-            progress.finish(result)
-        return result
+            progress.add_log("检查微信状态...")
+        if not is_wechat_running():
+            result = {"status": "daemon_unavailable", "message": "微信未运行，请先打开微信",
+                    "groups_updated": 0, "messages_new": 0, "errors": [],
+                    "new_groups_discovered": [], "files_downloaded": 0}
+            if progress:
+                progress.add_log("失败: 微信未运行")
+                progress.finish(result)
+            return result
+
+        if progress:
+            progress.add_log("启动 daemon（提取密钥+解密数据库，约需 15-20 秒，请耐心等待）...")
+        if not start_daemon():
+            result = {"status": "daemon_unavailable", "message": "daemon 启动失败，请稍后重试",
+                    "groups_updated": 0, "messages_new": 0, "errors": [],
+                    "new_groups_discovered": [], "files_downloaded": 0}
+            if progress:
+                progress.add_log("失败: daemon 启动失败")
+                progress.finish(result)
+            return result
+        _safe_mode_available = True
 
     stats = {"groups_updated": 0, "messages_new": 0, "errors": [],
              "new_groups_discovered": [], "files_downloaded": 0}
@@ -266,6 +284,8 @@ def sync(progress=None):
             project_keywords.append(kw)
 
     try:
+        # === PHASE A: All wx-cli calls (daemon alive) ===
+
         # Step 1: discover new groups
         if progress:
             progress.set_phase("discovering")
@@ -280,34 +300,12 @@ def sync(progress=None):
             if progress:
                 progress.add_error(str(e))
 
-        # Step 2: full sync for newly discovered groups
-        if new_groups:
-            if progress:
-                progress.set_phase("syncing_new", total_groups=len(new_groups))
-                progress.add_log(f"发现 {len(new_groups)} 个新群，开始全量同步")
-            for i, (name, _, _, _) in enumerate(new_groups):
-                if progress:
-                    progress.step_group(name, i + 1)
-                _human_delay(f"新群全量同步: {name}", progress=progress)
-                try:
-                    messages = _pull_group_messages(name, limit=500)
-                    r = _store_group_messages(name, messages)
-                    stats["messages_new"] += r["new"]
-                    if r["new"] > 0:
-                        stats["groups_updated"] += 1
-                    if progress:
-                        progress.add_log(f"{name}: +{r['new']} 条消息")
-                except Exception as e:
-                    stats["errors"].append(f"{name}: {str(e)}")
-                    if progress:
-                        progress.add_error(f"{name}: {str(e)}")
-
-        # Step 3: incremental sync via wx new-messages (single call, all chats)
+        # Step 2: single wx new-messages call (no per-group delays!)
         if progress:
             progress.set_phase("syncing")
-            progress.add_log("拉取增量消息 (wx new-messages)...")
+            progress.add_log("拉取增量消息 (wx new-messages -n 2000)...")
         try:
-            all_new = safe_new_messages(limit=500)
+            all_new = safe_new_messages(limit=2000)
             if progress:
                 progress.add_log(f"收到 {len(all_new)} 条新消息")
         except Exception as e:
@@ -316,6 +314,15 @@ def sync(progress=None):
             if progress:
                 progress.add_error(str(e))
 
+        # === KILL DAEMON IMMEDIATELY ===
+        stop_daemon()
+        _safe_mode_available = False
+        if progress:
+            progress.add_log("daemon 已关闭")
+
+        # === PHASE B: Pure DB processing (daemon dead, zero risk) ===
+
+        # Filter and group messages by chat
         grouped = {}
         for msg in all_new:
             chat_name = msg.get("chat", "")
@@ -328,35 +335,31 @@ def sync(progress=None):
             grouped.setdefault(chat_name, []).append(msg)
 
         group_names = list(grouped.keys())
-        if progress:
-            progress.set_phase("syncing", total_groups=len(group_names))
-            progress.add_log(f"增量同步 {len(group_names)} 个群 ({len(all_new)} 条消息)")
+        if progress and group_names:
+            progress.add_log(f"写入 {len(group_names)} 个群的消息到数据库")
 
         for idx, gname in enumerate(group_names, 1):
             msgs = grouped[gname]
             if progress:
                 progress.step_group(gname, idx)
+                progress.set_phase("writing", total_groups=len(group_names))
             try:
                 r = _store_group_messages(gname, msgs)
                 stats["messages_new"] += r["new"]
                 if r["new"] > 0:
                     stats["groups_updated"] += 1
-                if progress:
-                    progress.add_log(f"{gname}: +{r['new']} 条")
             except Exception as e:
                 stats["errors"].append(f"{gname}: {str(e)}")
                 if progress:
                     progress.add_error(f"{gname}: {str(e)}")
 
-        # Step 4: download new files
+        # File download (local filesystem, no wx-cli)
         if progress:
             progress.set_phase("files")
             progress.add_log("检查新文件...")
         try:
             file_stats = download_new_files()
             stats["files_downloaded"] = file_stats.get("downloaded", 0)
-            if progress and stats["files_downloaded"] > 0:
-                progress.add_log(f"下载了 {stats['files_downloaded']} 个新文件")
         except Exception as e:
             stats["errors"].append(f"download_files: {str(e)}")
             if progress:
@@ -366,9 +369,9 @@ def sync(progress=None):
                       "ok" if not stats["errors"] else f"部分错误: {len(stats['errors'])}个群")
 
     finally:
-        global _safe_mode_available
-        stop_daemon()
-        _safe_mode_available = False
+        if _safe_mode_available:
+            stop_daemon()
+            _safe_mode_available = False
 
     if progress:
         progress.finish(stats)

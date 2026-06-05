@@ -90,20 +90,29 @@ def _run_wx_raw(args, timeout=30):
         cmd_list = [WX_CLI] + args
 
     creationflags = subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0
+    proc = None
     try:
-        result = subprocess.run(
+        proc = subprocess.Popen(
             cmd_list,
-            capture_output=True, text=False, timeout=timeout,
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE,
             creationflags=creationflags
         )
+        stdout_bytes, stderr_bytes = proc.communicate(timeout=timeout)
+        returncode = proc.returncode
     except FileNotFoundError:
         raise RuntimeError("wx-cli 未安装")
     except subprocess.TimeoutExpired:
+        if proc:
+            try:
+                proc.kill()
+                proc.wait(timeout=3)
+            except Exception:
+                pass
         raise RuntimeError(f"wx-cli 执行超时 ({timeout}s)")
 
     _last_raw_call = time.time()
 
-    stdout_bytes = result.stdout or b""
+    stdout_bytes = stdout_bytes or b""
     try:
         stdout = stdout_bytes.decode("utf-8")
     except UnicodeDecodeError:
@@ -112,8 +121,8 @@ def _run_wx_raw(args, timeout=30):
         except UnicodeDecodeError:
             stdout = stdout_bytes.decode("utf-8", errors="replace")
 
-    if result.returncode != 0:
-        stderr_bytes = result.stderr or b""
+    if returncode != 0:
+        stderr_bytes = stderr_bytes or b""
         try:
             stderr = stderr_bytes.decode("gbk").strip()
         except (UnicodeDecodeError, LookupError):
@@ -126,9 +135,26 @@ def _run_wx_raw(args, timeout=30):
     return stdout.strip()
 
 
+def is_wechat_running():
+    """检查微信进程是否在运行。daemon 需要微信进程才能提取密钥。"""
+    import sys
+    if sys.platform != "win32":
+        return True
+    try:
+        result = subprocess.run(
+            ["powershell", "-Command",
+             "if (Get-Process -Name 'WeChatAppEx','WeChat' -ErrorAction SilentlyContinue) { exit 0 } else { exit 1 }"],
+            capture_output=True, timeout=5,
+            creationflags=subprocess.CREATE_NO_WINDOW
+        )
+        return result.returncode == 0
+    except Exception:
+        return True
+
+
 def is_daemon_running():
     try:
-        out = _run_wx_raw(["daemon", "status"], timeout=10)
+        out = _run_wx_raw(["daemon", "status"], timeout=5)
         return "运行中" in out or ("运行" in out and "未运行" not in out)
     except Exception:
         return False
@@ -138,18 +164,19 @@ def start_daemon():
     """Trigger daemon auto-start by accessing WeChat database.
 
     wx-daemon auto-starts when a wx command touches the WeChat DB.
-    'wx daemon status' only checks a Named Pipe and does NOT access
-    the database, so it cannot trigger auto-start. Use 'wx sessions'
-    instead — it reads the session list from the DB, which triggers
-    the daemon's on-demand startup.
+    The daemon starts ASYNCHRONOUSLY — 'wx sessions' may timeout before
+    the daemon finishes key extraction and DB warmup. So we ignore
+    timeouts and check is_daemon_running() separately.
     """
     import time
-    try:
-        _run_wx_raw(["sessions", "-n", "1", "--json"], timeout=30)
-        time.sleep(2)
-        return is_daemon_running()
-    except Exception:
+    if not is_wechat_running():
         return False
+    try:
+        _run_wx_raw(["sessions", "-n", "1", "--json"], timeout=15)
+    except Exception:
+        pass  # daemon may still be starting in background
+    time.sleep(2)
+    return is_daemon_running()
 
 
 def ensure_daemon():

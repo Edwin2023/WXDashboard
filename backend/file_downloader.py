@@ -48,7 +48,30 @@ def download_new_files():
         category = _sanitize_name(msg["category"] or "未分类")
         group_name = _sanitize_name(msg["group_name"] or "未知群")
 
-        dest_dir = os.path.join(DOWNLOAD_DIR, project, category, group_name)
+        parent_dir = os.path.join(DOWNLOAD_DIR, project, category)
+        file_date = (msg["msg_date"] or "").replace("-", "")[:8]  # "2026-06-04" -> "20260604"
+        os.makedirs(parent_dir, exist_ok=True)
+
+        # Find existing folder for this group (may have old date prefix)
+        old_dir = None
+        old_date = ""
+        for entry in os.listdir(parent_dir):
+            entry_path = os.path.join(parent_dir, entry)
+            if os.path.isdir(entry_path) and entry.endswith("_" + group_name):
+                old_dir = entry_path
+                prefix = entry[:8]
+                if prefix.isdigit() and len(prefix) == 8:
+                    old_date = prefix
+                break
+
+        new_folder_name = f"{file_date}_{group_name}" if file_date else group_name
+        dest_dir = os.path.join(parent_dir, new_folder_name)
+
+        if old_dir and file_date and file_date > old_date:
+            os.rename(old_dir, dest_dir)
+        elif old_dir:
+            dest_dir = old_dir
+
         os.makedirs(dest_dir, exist_ok=True)
 
         dest_path = os.path.join(dest_dir, filename)

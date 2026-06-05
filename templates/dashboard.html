@@ -9,74 +9,79 @@
 </head>
 <body>
 
-<header class="app-header">
-  <div class="header-top">
-    <div class="project-selector">
-      <select id="project-select" class="project-select">
-        <option value="Laldia">Laldia</option>
-      </select>
-      <h1 class="app-title"><span>港湾</span></h1>
-    </div>
-    <span class="app-subtitle">微信群台账</span>
+<nav class="sidebar" id="project-nav">
+  <div class="sidebar-brand">
+    <h1 class="sidebar-title">港湾</h1>
+    <span class="sidebar-subtitle">微信群台账</span>
   </div>
-  <div class="header-controls">
-    <span class="meta-info" id="meta-info">加载中...</span>
-    <div class="header-actions">
-      <div class="search-wrap">
-        <svg class="search-icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
-        <input type="text" id="search-input" class="search-input" placeholder="搜索消息内容...">
-      </div>
-      <button id="export-btn" class="btn-export">
-        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
-        导出Excel
-      </button>
-      <button id="refresh-btn" class="btn-refresh">
-        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg>
-        刷新消息
-      </button>
-    </div>
+  <div class="sidebar-projects" id="sidebar-projects">
   </div>
-</header>
-
-<nav class="category-bar">
-  <div id="category-tabs" class="category-tabs-inner"></div>
-  <select id="category-filter" class="filter-select">
-    <option value="">按分类筛选</option>
-  </select>
-  <select id="creator-filter" class="filter-select">
-    <option value="">按群主筛选</option>
-  </select>
+  <div class="sidebar-footer">
+    <span class="sidebar-version">WXDashboard</span>
+  </div>
 </nav>
 
-<main class="main-content">
-  <div class="table-container" id="table-container">
-    <table id="groups-table">
-      <colgroup>
-        <col class="col-idx">
-        <col class="col-name">
-        <col class="col-cat">
-        <col class="col-date">
-        <col class="col-count">
-        <col class="col-creator">
-        <col class="col-msgs">
-        <col class="col-contacts">
-      </colgroup>
-      <thead>
-        <tr>
-          <th>#</th>
-          <th>群名</th>
-          <th>分类</th>
-          <th>最后活跃</th>
-          <th>消息数</th>
-          <th>群主</th>
-          <th>最近消息</th>
-          <th>联系信息 <button class="bcc-mail-btn" id="bcc-mail-btn" title="群发邮件给当前分类下所有联系人"><svg width="13" height="10" viewBox="0 0 13 10" fill="none"><path d="M11.7 0H1.3C0.585 0 0 0.585 0 1.3V8.7C0 9.415 0.585 10 1.3 10H11.7C12.415 10 13 9.415 13 8.7V1.3C13 0.585 12.415 0 11.7 0Z" fill="currentColor"/><path d="M0 1L6.5 5.5L13 1" stroke="var(--ink)" stroke-width="1.2" fill="none"/></svg></button></th>
-        </tr>
-      </thead>
-      <tbody id="groups-tbody"></tbody>
-    </table>
-  </div>
-</main>
+<div class="app-main">
+  <header class="app-header">
+    <div class="header-controls">
+      <span class="meta-info" id="meta-info">加载中...</span>
+      <div class="header-actions">
+        <div class="search-wrap">
+          <svg class="search-icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+          <input type="text" id="search-input" class="search-input" placeholder="搜索消息内容...">
+        </div>
+        <button id="export-btn" class="btn-export">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+          导出Excel
+        </button>
+        <button id="refresh-btn" class="btn-refresh">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg>
+          刷新消息
+        </button>
+      </div>
+    </div>
+  </header>
+
+  <nav class="category-bar">
+    <div id="category-tabs" class="category-tabs-inner"></div>
+    <select id="category-filter" class="filter-select">
+      <option value="">按分类筛选</option>
+    </select>
+    <select id="creator-filter" class="filter-select">
+      <option value="">按群主筛选</option>
+    </select>
+  </nav>
+
+  <main class="main-content">
+    <div class="table-container" id="table-container">
+      <table id="groups-table">
+        <colgroup>
+          <col class="col-idx">
+          <col class="col-name">
+          <col class="col-cat">
+          <col class="col-date">
+          <col class="col-count">
+          <col class="col-creator">
+          <col class="col-msgs">
+          <col class="col-contacts">
+        </colgroup>
+        <thead>
+          <tr>
+            <th>#</th>
+            <th>群名</th>
+            <th>分类</th>
+            <th>最后活跃</th>
+            <th>消息数</th>
+            <th>群主</th>
+            <th>最近消息</th>
+            <th>联系信息 <button class="bcc-mail-btn" id="bcc-mail-btn" title="群发邮件给当前分类下所有联系人"><svg width="13" height="10" viewBox="0 0 13 10" fill="none"><path d="M11.7 0H1.3C0.585 0 0 0.585 0 1.3V8.7C0 9.415 0.585 10 1.3 10H11.7C12.415 10 13 9.415 13 8.7V1.3C13 0.585 12.415 0 11.7 0Z" fill="currentColor"/><path d="M0 1L6.5 5.5L13 1" stroke="var(--ink)" stroke-width="1.2" fill="none"/></svg></button></th>
+          </tr>
+        </thead>
+        <tbody id="groups-tbody"></tbody>
+      </table>
+    </div>
+  </main>
+</div>
 
 <div class="drawer-overlay" id="drawer-overlay"></div>
 <aside class="drawer" id="drawer">
@@ -99,6 +104,7 @@
 <div class="sync-panel" id="sync-panel">
   <div class="sync-header">
     <h3 id="sync-phase-text">准备同步...</h3>
+    <span class="sync-elapsed" id="sync-elapsed"></span>
     <span class="sync-counter" id="sync-counter"></span>
   </div>
   <div class="sync-progress-wrap">
