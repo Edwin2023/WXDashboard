@@ -49,6 +49,14 @@ def init_db():
     except sqlite3.OperationalError:
         pass
     try:
+        conn.execute("ALTER TABLE groups ADD COLUMN chat_type TEXT DEFAULT 'group'")
+    except sqlite3.OperationalError:
+        pass
+    try:
+        conn.execute("ALTER TABLE groups ADD COLUMN backfill_failed INTEGER DEFAULT 0")
+    except sqlite3.OperationalError:
+        pass
+    try:
         conn.execute("ALTER TABLE messages ADD COLUMN extracted INTEGER DEFAULT 0")
     except sqlite3.OperationalError:
         pass
@@ -202,29 +210,29 @@ def get_group_by_name(name):
 
 
 def upsert_group(name, category, sub_category=None, partner_full_name=None, main_purpose=None,
-                 notes=None, group_creator=None, project=None):
+                 notes=None, group_creator=None, project=None, chat_type="group"):
     conn = get_db()
     existing = conn.execute("SELECT id, manual_category FROM groups WHERE name=?", (name,)).fetchone()
     if existing:
         if existing["manual_category"]:
             conn.execute("""
                 UPDATE groups SET sub_category=?, partner_full_name=?, main_purpose=?,
-                notes=?, group_creator=?
+                notes=?, group_creator=?, chat_type=?
                 WHERE id=?
-            """, (sub_category, partner_full_name, main_purpose, notes, group_creator, existing["id"]))
+            """, (sub_category, partner_full_name, main_purpose, notes, group_creator, chat_type, existing["id"]))
         else:
             conn.execute("""
                 UPDATE groups SET category=?, sub_category=?, partner_full_name=?, main_purpose=?,
-                notes=?, group_creator=?, project=?
+                notes=?, group_creator=?, project=?, chat_type=?
                 WHERE id=?
-            """, (category, sub_category, partner_full_name, main_purpose, notes, group_creator, project, existing["id"]))
+            """, (category, sub_category, partner_full_name, main_purpose, notes, group_creator, project, chat_type, existing["id"]))
         gid = existing["id"]
     else:
         cur = conn.execute("""
             INSERT INTO groups (name, category, sub_category, partner_full_name, main_purpose,
-                              notes, group_creator, project)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-        """, (name, category, sub_category, partner_full_name, main_purpose, notes, group_creator, project))
+                              notes, group_creator, project, chat_type)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """, (name, category, sub_category, partner_full_name, main_purpose, notes, group_creator, project, chat_type))
         gid = cur.lastrowid
     conn.commit()
     conn.close()

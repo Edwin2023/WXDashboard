@@ -1,8 +1,17 @@
 import json
+import os
 import re
+import sys
 import time
 import random
 import threading
+
+# Windows 控制台默认 GBK，遇到 emoji 群名会 crash — 尽量切到 UTF-8
+try:
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+except (AttributeError, OSError):
+    pass
 from .config import SYNC_DELAY_MIN, SYNC_DELAY_MAX
 from .database import (
     get_db, upsert_message, upsert_group, update_group_stats, add_sync_log,
@@ -90,6 +99,8 @@ class SyncProgress:
 _safe_mode_available = None
 
 PROJECT_RULES = [
+    (["cmi"], "CMI MOD2"),
+    (["zoo"], "ZOO"),
     (["laldia", "laidia", "港湾"], "Laldia"),
     (["泰国"], "泰国光伏"),
     (["rama4", "rama 4"], "Rama4"),
@@ -191,43 +202,65 @@ def init_daemon():
     return ok, msg
 
 
-def _discover_new_groups(progress=None):
-    sessions = safe_export_sessions(limit=200)
-    group_names = set(get_all_group_names())
-    new_groups = []
+def _discover_new_chats(progress=None, session_limit=500):
+    """
+    发现新会话（群 + 私聊，全量），不按 PROJECT_RULES 过滤。
+    只写记录，不额外调 wx-cli 抓群主（延迟到 backfill 时按需拉）。
+    """
+    sessions = safe_export_sessions(limit=session_limit)
+    known_names = set(get_all_group_names())
+    new_chats = []
 
     for s in sessions:
-        if s.get("chat_type") != "group":
-            continue
         name = s.get("chat", "")
-        if not name or name in group_names:
+        chat_type = s.get("chat_type", "")
+        if not name or name in known_names:
+            continue
+        if chat_type not in ("group", "private"):
+            continue
+        # 硬性黑名单：即使全量也要跳过噪声（如"通威"、"364mw"）
+        if any(sk in name.lower() for sk in SKIP_KEYWORDS):
             continue
 
-        proj = _infer_project(name)
-        if not proj:
-            continue
+        if chat_type == "group":
+            proj = _infer_project(name)
+            category = _infer_category(name)
+            sub_category = _infer_subcategory(name, category)
+        else:
+            proj, category, sub_category = None, "私聊", None
 
-        category = _infer_category(name)
-        sub_category = _infer_subcategory(name, category)
-        upsert_group(name, category, sub_category=sub_category, project=proj)
-        group_names.add(name)
-        new_groups.append((name, category, sub_category, proj))
+        upsert_group(name, category or "其他", sub_category=sub_category,
+                     project=proj, chat_type=chat_type)
+        known_names.add(name)
+        new_chats.append((name, category, sub_category, proj, chat_type))
         if progress:
-            progress.add_log(f"发现新群: {name}")
+            tag = "私聊" if chat_type == "private" else "群"
+            progress.add_log(f"发现新{tag}: {name}")
 
-    return new_groups
+    return new_chats
+
+
+# 向后兼容别名
+_discover_new_groups = _discover_new_chats
 
 
 def _pull_group_messages(group_name, limit=200, since=None):
     return safe_history(group_name, limit=limit, since=since)
 
 
-def _store_group_messages(group_name, messages):
+def _store_group_messages(group_name, messages, default_chat_type="group"):
+    """
+    写入某个会话（群或私聊）的消息。假定 chat 记录已存在（discovery 阶段建好）。
+    若不存在（罕见：daemon 报了未识别的 chat），按 default_chat_type 兜底建一条。
+    不做任何 wx-cli 调用（可在 Phase B 安全调用）。
+    """
     conn = get_db()
     group = conn.execute("SELECT id FROM groups WHERE name=?", (group_name,)).fetchone()
     if not group:
-        group_id = upsert_group(group_name, _infer_category(group_name),
-                                project=_infer_project(group_name) or "Laldia")
+        cat = "私聊" if default_chat_type == "private" else _infer_category(group_name)
+        proj = None if default_chat_type == "private" else _infer_project(group_name)
+        group_id = upsert_group(group_name, cat or "其他", project=proj,
+                                chat_type=default_chat_type)
     else:
         group_id = group["id"]
 
@@ -278,27 +311,86 @@ def sync(progress=None):
     stats = {"groups_updated": 0, "messages_new": 0, "errors": [],
              "new_groups_discovered": [], "files_downloaded": 0}
 
-    project_keywords = []
-    for keywords, _proj in PROJECT_RULES:
-        for kw in keywords:
-            project_keywords.append(kw)
+    backfill_limit = int(os.environ.get("SYNC_BACKFILL_LIMIT", "100"))
 
     try:
         # === PHASE A: All wx-cli calls (daemon alive) ===
 
-        # Step 1: discover new groups
+        # Step 1: 发现新会话（群 + 私聊，全量，不过滤 PROJECT_RULES）
         if progress:
             progress.set_phase("discovering")
-            progress.add_log("正在扫描会话列表，发现新群...")
-        new_groups = []
+            progress.add_log("扫描会话列表，发现新会话（含私聊）...")
+        new_chats = []
         try:
-            for name, cat, sub, proj in _discover_new_groups(progress=progress):
-                new_groups.append((name, cat, sub, proj))
-                stats["new_groups_discovered"].append({"name": name, "category": cat, "project": proj})
+            for name, cat, sub, proj, ctype in _discover_new_chats(progress=progress):
+                new_chats.append((name, cat, sub, proj, ctype))
+                stats["new_groups_discovered"].append({
+                    "name": name, "category": cat, "project": proj, "chat_type": ctype
+                })
         except Exception as e:
             stats["errors"].append(f"discover: {str(e)}")
             if progress:
                 progress.add_error(str(e))
+
+        # Step 1.5: 空会话 backfill（首次全量 + 后续新会话补齐）
+        # 优先级：本次刚发现的（sessions 顺序 = 最近活跃）→ 已存在但空的
+        # 每次最多 backfill_limit 个，避免超日限
+        # 跳过 backfill_failed=1 的会话（"找不到联系人/消息记录"类，永远拉不到）
+        try:
+            fresh_names = [n for n, _c, _s, _p, _t in new_chats]
+            _conn = get_db()
+            other_empty = [r["name"] for r in _conn.execute("""
+                SELECT name FROM groups
+                WHERE deleted=0 AND total_messages=0 AND COALESCE(backfill_failed,0)=0
+                ORDER BY (last_active_date IS NULL), last_active_date DESC, id
+            """).fetchall() if r["name"] not in fresh_names]
+            _conn.close()
+            backfill_names = (fresh_names + other_empty)[:backfill_limit]
+        except Exception as e:
+            stats["errors"].append(f"query empty chats: {str(e)}")
+            backfill_names = []
+
+        new_chat_msgs = {}
+        permanently_failed = []
+        if backfill_names:
+            total = len(backfill_names)
+            if progress:
+                progress.set_phase("backfilling", total_groups=total)
+                progress.add_log(f"空会话 {total} 个 (cap={backfill_limit})，逐一拉取历史...")
+            for idx, name in enumerate(backfill_names, 1):
+                if progress:
+                    progress.step_group(name, idx, total=total)
+                _human_delay(f"空会话 {name} 拉历史前节流", progress=progress)
+                try:
+                    msgs = safe_history(name, limit=500)
+                    new_chat_msgs[name] = msgs
+                    if progress:
+                        progress.add_log(f"空会话 {name}: {len(msgs)} 条")
+                except Exception as e:
+                    err_msg = str(e)
+                    # "找不到联系人" / "找不到 X 的消息记录" → 永久跳过，不算错误
+                    if "找不到" in err_msg:
+                        permanently_failed.append(name)
+                        if progress:
+                            progress.add_log(f"跳过 {name}（无历史）")
+                    else:
+                        stats["errors"].append(f"history {name}: {err_msg}")
+                        if progress:
+                            progress.add_error(f"history {name}: {err_msg}")
+
+        # 标记本轮永久失败的会话（下次不再重试）
+        if permanently_failed:
+            try:
+                _conn = get_db()
+                _conn.executemany(
+                    "UPDATE groups SET backfill_failed=1 WHERE name=?",
+                    [(n,) for n in permanently_failed]
+                )
+                _conn.commit()
+                _conn.close()
+                stats["skipped_no_history"] = len(permanently_failed)
+            except Exception as e:
+                stats["errors"].append(f"mark backfill_failed: {str(e)}")
 
         # Step 2: single wx new-messages call (no per-group delays!)
         if progress:
@@ -322,36 +414,42 @@ def sync(progress=None):
 
         # === PHASE B: Pure DB processing (daemon dead, zero risk) ===
 
-        # Filter and group messages by chat
+        # 按 chat_name 归并消息（群 + 私聊，全量；只跳硬黑名单）
         grouped = {}
+        chat_type_hint = {}
         for msg in all_new:
             chat_name = msg.get("chat", "")
-            if msg.get("chat_type") != "group":
-                continue
-            if not any(kw in chat_name.lower() for kw in project_keywords):
+            ctype = msg.get("chat_type", "")
+            if not chat_name or ctype not in ("group", "private"):
                 continue
             if any(sk in chat_name.lower() for sk in SKIP_KEYWORDS):
                 continue
             grouped.setdefault(chat_name, []).append(msg)
+            chat_type_hint[chat_name] = ctype
 
-        group_names = list(grouped.keys())
-        if progress and group_names:
-            progress.add_log(f"写入 {len(group_names)} 个群的消息到数据库")
+        # 合并 backfill 拉到的历史
+        for cname, msgs in new_chat_msgs.items():
+            grouped.setdefault(cname, []).extend(msgs)
 
-        for idx, gname in enumerate(group_names, 1):
-            msgs = grouped[gname]
+        chat_names = list(grouped.keys())
+        if progress and chat_names:
+            progress.add_log(f"写入 {len(chat_names)} 个会话的消息到数据库")
+
+        for idx, cname in enumerate(chat_names, 1):
+            msgs = grouped[cname]
             if progress:
-                progress.step_group(gname, idx)
-                progress.set_phase("writing", total_groups=len(group_names))
+                progress.step_group(cname, idx)
+                progress.set_phase("writing", total_groups=len(chat_names))
             try:
-                r = _store_group_messages(gname, msgs)
+                r = _store_group_messages(cname, msgs,
+                                          default_chat_type=chat_type_hint.get(cname, "group"))
                 stats["messages_new"] += r["new"]
                 if r["new"] > 0:
                     stats["groups_updated"] += 1
             except Exception as e:
-                stats["errors"].append(f"{gname}: {str(e)}")
+                stats["errors"].append(f"{cname}: {str(e)}")
                 if progress:
-                    progress.add_error(f"{gname}: {str(e)}")
+                    progress.add_error(f"{cname}: {str(e)}")
 
         # File download (local filesystem, no wx-cli)
         if progress:
@@ -420,6 +518,62 @@ def _upsert_from_wx_msg(conn, group_id, msg):
     from .contact_extractor import extract_and_save
     extract_and_save(conn, group_id, cur.lastrowid, sender, content)
     return True
+
+
+def backfill_empty_groups(project=None, limit_per_group=500):
+    """
+    补齐已发现但消息为空的群历史。
+    用于修复：新群发现时只创建了记录，但 new-messages 不返回其历史。
+
+    Args:
+        project: 可选。只处理指定项目的空群。None 表示全部。
+        limit_per_group: 每群拉多少条历史。
+
+    Returns:
+        {"targets": [...], "backfilled": [{"name","new","total"}], "errors": [...]}
+    """
+    conn = get_db()
+    sql = "SELECT name FROM groups WHERE deleted=0 AND total_messages=0"
+    params = []
+    if project:
+        sql += " AND project=?"
+        params.append(project)
+    targets = [r["name"] for r in conn.execute(sql, params).fetchall()]
+    conn.close()
+
+    result = {"targets": targets, "backfilled": [], "errors": []}
+    if not targets:
+        return result
+
+    if not is_wechat_running():
+        result["errors"].append("WeChat 未运行")
+        return result
+
+    global _safe_mode_available
+    ok, msg = ensure_daemon()
+    _safe_mode_available = ok
+    if not ok:
+        result["errors"].append(f"daemon 启动失败: {msg}")
+        return result
+
+    try:
+        for i, name in enumerate(targets, 1):
+            print(f"[{i}/{len(targets)}] {name}")
+            _human_delay(f"backfill {name}")
+            try:
+                msgs = safe_history(name, limit=limit_per_group)
+                r = _store_group_messages(name, msgs)
+                result["backfilled"].append({"name": name, "pulled": len(msgs),
+                                              "new": r["new"], "total": r["total"]})
+                print(f"  pulled={len(msgs)} new={r['new']} total={r['total']}")
+            except Exception as e:
+                result["errors"].append(f"{name}: {str(e)}")
+                print(f"  ERROR: {e}")
+    finally:
+        stop_daemon()
+        _safe_mode_available = False
+
+    return result
 
 
 def get_sync_stats():
